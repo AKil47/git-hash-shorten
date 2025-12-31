@@ -1,7 +1,52 @@
+use git2::Repository;
+use std::path::Path;
 
-pub fn compute_shortest_prefix(sorted_hashes: &[String], target: &str) -> Option<String> {
+/// Trait to abstract the source of hashes (Mockable)
+pub trait HashRepository {
+    fn get_all_hashes(&self) -> Result<Vec<String>, String>;
+}
+
+/// Real implementation using git2
+pub struct GitRepository {
+    repo: Repository,
+}
+
+impl GitRepository {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, String> {
+        let repo = Repository::open(path).map_err(|e| e.to_string())?;
+        Ok(Self { repo })
+    }
+}
+
+impl HashRepository for GitRepository {
+    fn get_all_hashes(&self) -> Result<Vec<String>, String> {
+        let odb = self.repo.odb().map_err(|e| e.to_string())?;
+        let mut hashes = Vec::new();
+        odb.foreach(|oid| {
+            hashes.push(oid.to_string());
+            true
+        }).map_err(|e| e.to_string())?;
+        Ok(hashes)
+    }
+}
+
+/// High-level function that ties everything together
+pub fn resolve(repo: &impl HashRepository, target: &str) -> Result<String, String> {
+    let mut hashes = repo.get_all_hashes()?;
+    
+    // Core logic
+    hashes.sort();
+    
+    // Normalize input hash to lowercase
+    let target = target.to_lowercase();
+    
+    compute_shortest_prefix(&hashes, &target)
+        .ok_or_else(|| format!("Hash '{}' not found in repository", target))
+}
+
+/// Pure logic function (Internal)
+fn compute_shortest_prefix(sorted_hashes: &[String], target: &str) -> Option<String> {
     // 1. Find the index of the target in the sorted list
-    // We expect the list to be sorted.
     let idx = match sorted_hashes.binary_search_by(|p| p.as_str().cmp(target)) {
         Ok(i) => i,
         Err(_) => return None, // Target not found
@@ -41,61 +86,74 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
 mod tests {
     use super::*;
 
+    // Mock implementation
+    struct MockRepo {
+        hashes: Vec<String>,
+    }
+    
+    impl HashRepository for MockRepo {
+        fn get_all_hashes(&self) -> Result<Vec<String>, String> {
+            Ok(self.hashes.clone())
+        }
+    }
+
+    #[test]
+    fn test_integration_mocked_success() {
+        let repo = MockRepo {
+            hashes: vec![
+                "aaaa1000".to_string(),
+                "bbbb2000".to_string(),
+                "cccc3000".to_string()
+            ]
+        };
+        
+        // Should find match and shorten
+        let res = resolve(&repo, "bbbb2000").expect("Should find hash");
+        assert_eq!(res, "bbbb"); // min 4 chars
+    }
+
+    #[test]
+    fn test_integration_mocked_not_found() {
+        let repo = MockRepo {
+            hashes: vec!["aaaa1000".to_string()]
+        };
+        
+        let res = resolve(&repo, "zzzz9000");
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("not found"));
+    }
+    
+    #[test]
+    fn test_integration_mocked_collision_logic() {
+         let repo = MockRepo {
+            hashes: vec![
+                "abcde100".to_string(),
+                "abcde200".to_string(), // Shared prefix "abcde" (5 chars)
+            ]
+        };
+        // Target abcde100. Neighbor abcde200. Common abcde (5).
+        // Needed 6 -> abcde1
+        
+        let res = resolve(&repo, "abcde100").unwrap();
+        assert_eq!(res, "abcde1");
+    }
+
+    // Original Unit Tests for pure logic
     #[test]
     fn test_unique_in_list() {
         let hashes = vec![
-            "abc1".to_string(),
-            "abc2".to_string(),
-            "def1".to_string(),
+            "abc111".to_string(),
+            "abc222".to_string(),
+            "def111".to_string(),
         ];
         // Sorted: same as above
         // Target: abc1
         // Left: None, Right: abc2
         // Common(abc1, abc2) = 3 ("abc")
-        // Needed = 3 + 1 = 4. Wait. "abc1" vs "abc2". "abc" is common. Unique is "abc1". 4 chars.
+        // Needed = 3 + 1 = 4. 
+        // Min 4. 
         
-        let res = compute_shortest_prefix(&hashes, "abc1");
+        let res = compute_shortest_prefix(&hashes, "abc111");
         assert_eq!(res, Some("abc1".to_string()));
-    }
-
-    #[test]
-    fn test_short_prefix() {
-        let hashes = vec![
-            "a1111".to_string(), // lengthened to allow 4 chars
-            "b2222".to_string(),
-            "c3333".to_string(),
-        ];
-        // Target: b2222
-        // Left: a1111, Right: c3333. Common 0.
-        // Needed: max(0+1, 4) = 4 => "b222"
-        let res = compute_shortest_prefix(&hashes, "b2222");
-        assert_eq!(res, Some("b222".to_string()));
-    }
-
-    #[test]
-    fn test_duplicate_prefix() {
-        let hashes = vec![
-            "aaaa1".to_string(),
-            "aaaa2".to_string(),
-        ];
-        // Target aaaa1
-        // Right aaaa2. Common aaaa (4). Needed 5 -> aaaa1
-        let res = compute_shortest_prefix(&hashes, "aaaa1");
-        assert_eq!(res, Some("aaaa1".to_string()));
-    }
-
-    #[test]
-    fn test_single_item() {
-        let hashes = vec!["abcdef".to_string()];
-        // Left None, Right None. Needed max(1, 4) = 4.
-        let res = compute_shortest_prefix(&hashes, "abcdef");
-        assert_eq!(res, Some("abcd".to_string()));
-    }
-
-    #[test]
-    fn test_not_found() {
-        let hashes = vec!["abc".to_string()];
-        let res = compute_shortest_prefix(&hashes, "xyz");
-        assert_eq!(res, None);
     }
 }

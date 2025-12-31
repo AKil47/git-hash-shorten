@@ -1,6 +1,5 @@
 use clap::Parser;
-use git2::Repository;
-use ghash::compute_shortest_prefix;
+use ghash::{GitRepository, resolve};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -9,33 +8,25 @@ struct Cli {
     hash: String,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
     let cli = Cli::parse();
     
     // Open the repository in the current directory
-    let repo = Repository::open(".")?;
-    let odb = repo.odb()?;
+    let repo_result = GitRepository::open(".");
     
-    let mut hashes = Vec::new();
-    // Collect all OIDs from the object database
-    odb.foreach(|oid| {
-        hashes.push(oid.to_string());
-        true
-    })?;
+    let repo = match repo_result {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Error opening repository: {}", e);
+            std::process::exit(1);
+        }
+    };
     
-    // Sort for binary search
-    hashes.sort();
-    
-    // Normalize input hash to lowercase
-    let target = cli.hash.to_lowercase();
-    
-    match compute_shortest_prefix(&hashes, &target) {
-        Some(short) => println!("{}", short),
-        None => {
-            eprintln!("Error: Hash '{}' not found in repository", target);
+    match resolve(&repo, &cli.hash) {
+        Ok(short) => println!("{}", short),
+        Err(e) => {
+            eprintln!("Error: {}", e);
             std::process::exit(1);
         }
     }
-    
-    Ok(())
 }
