@@ -1,0 +1,2 @@
+# Git Hash Minimizer
+
